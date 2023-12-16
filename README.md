@@ -1,1 +1,11 @@
-# facebook-city
+# Facebook City
+
+This repository contains data and code used to produce the article __Facebook city: Place-named groups as urban communication infrastructure in Greater London__.
+
+**Abstract**:  This paper investigates the geography of Facebook use at an urban-regional scale, focussing on place-named groups, meaning various interest groups with names relating to places such as towns, neighbourhoods, or points of interest. Conceptualising Facebook as a digital infrastructure – that is, the platform’s urban footprint, in the form of its place-named groups, rather than what individuals share and create using the service – we explore the location, theme, and scale of 3016 groups relating to places in Greater London. Firstly, we address the quantitative and qualitative methodological challenges that we faced to identify the groups and ground them geographically. Secondly, we analyse the scale of the toponyms in the group names, which are predominantly linked to London’s suburbs. Thirdly, we study the spatial distribution of groups, both overall and by specific types, in relation to the socio-demographic characteristics of residents at the borough level. Through correlation and robust regression analyses, the presence and activity of groups are linked to a relatively older, non-deprived, and non-immigrant population living in less dense areas, with high variability across different group types. These results portray place-named Facebook groups as communication infrastructure skewed towards more banal interactions and places in Greater London’s outlying boroughs. This research is among the first to explore and visualize the urban geographies of Facebook groups at a metropolitan scale, showing the extent, nature and locational tendencies of large-scale social media use as increasingly ordinary aspects of how people come to know, experience, live and work in cities.
+
+**Keywords**: Facebook groups, Greater London, digital platform infrastructure, spatial social media, urban communication, neighbourhood groups, communication geography
+
+## License
+
+This work is licensed under CC BY-NC-ND 4.0. To view a copy of this license, visit http://creativecommons.org/licenses/by-nc-nd/4.0/
