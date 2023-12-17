@@ -15,6 +15,7 @@ This paper investigates the geography of Facebook use at an urban-regional scale
 
 The main dataset is `data/facebook_city_data/facebook_city_data_groups.tsv`, a table 
 containing place-based Facebook groups in Greater London, collected between 2020 and 2022.
+The data is also available in Excel format.
 This dataset was collected through web scraping from Google and manual searches on Facebook.
 
 ## Code
