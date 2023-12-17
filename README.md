@@ -3,7 +3,7 @@
 ## Overview
 
 This repository contains the data and code associated with the paper titled "Facebook City: Place-named groups as urban communication infrastructure in Greater London". 
-This is part of the "Localising Content Governance" project, funded by **Facebook Research**.
+This is part of the "Localising Content Governance" project, funded by **Facebook Research** at Birkbeck, University of London and King's College London. 
 
 **Keywords**: Facebook groups, Greater London, digital platform infrastructure, spatial social media, urban communication, neighbourhood groups, communication geography
 
