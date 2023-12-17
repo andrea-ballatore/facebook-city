@@ -22,7 +22,7 @@ Derived data are stored in folder `data/analysis`.
 
 ## Code
 
-For data protection issues, we cannot release reproducible code and data. However, the complete 
+For data protection issues, we cannot release fully reproducible code and data. However, the complete 
 R and Python code is available in this folder. The Python code is a Google Search scraper. 
 The analysis of data is entirely in the R file `fb_groups_analysis.Rmd`.
 
