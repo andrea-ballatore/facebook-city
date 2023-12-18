@@ -28,10 +28,10 @@ The analysis of data is entirely in the R file `fb_groups_analysis.Rmd`.
 
 ## Team
 
-* Dr **Scott Rodgers** is Reader in Media Theory at Birkbeck, University of London. He is a qualitative researcher whose work specialises in the relationships of media and cities and the geographies of communication. Scott is the Principal Investigator on the project.
+* Dr **Scott Rodgers** is Reader in Media and Geography at Birkbeck, University of London. He is a qualitative researcher whose work specialises in the relationships of media and cities and the geographies of communication. Scott is the Principal Investigator on the project.
 * Dr **Andrea Ballatore** is Lecturer in Geographic Data Science at King's College London. His research focuses on spatial analysis, GIS, social media analytics and Internet geography. Andrea is a Co-Investigator on the project.
 * Dr **Susan Moore** is Associate Professor in Urban Development and Planning at University College London. Her research focuses on urban development and governance, including the role of social media platforms in relation to local urban change. Susan is a Co-Investigator on the project.
-* Dr **Liam McLoughlin** is a Postdoctoral Research Fellow at Birkbeck, University of London. His work spans qualitative and quantitative approaches, focusing on the study of internet cultures, content moderation practices, online harms and politics. Liam is the lead Field Researcher for the project.
+* Dr **Liam McLoughlin** is a Lecturer in Communication and Media at the University of Liverpoool. His work spans qualitative and quantitative approaches, focusing on the study of internet cultures, content moderation practices, online harms and politics. Liam was the lead Field Researcher for the project.
 
 ## License
 
