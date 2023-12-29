@@ -20,6 +20,8 @@ This dataset was collected through web scraping from Google and manual searches 
 
 Derived data are stored in folder `data/analysis`.
 
+The dataset is compliant with the Association of Internet Researchers (AoIR) ethical guidelines: https://aoir.org/reports/ethics3.pdf
+
 ## Code
 
 For data protection issues, we cannot release fully reproducible code and data. However, the complete 
