@@ -1,0 +1,2022 @@
+---
+title: "London Facebook groups"
+output:
+  html_document: 
+    self_contained: no
+    toc: yes
+    number_sections: yes
+  pdf_document: default
+editor_options: 
+  markdown: 
+    wrap: 72
+---
+
+2020-2023
+
+Author: Andrea Ballatore
+
+# Setup
+
+```{r setup, echo=FALSE, message=FALSE}
+# Load packages
+if (!require("pacman")) install.packages("pacman")
+pacman::p_load(tidyverse, sf, R.utils, knitr, openxlsx, janitor, tmap, corrplot, Hmisc, readxl, e1071, viridis, sjmisc, writexl, gplots, factoextra, MASS, lm.beta, glmnet, Rcpp, caret, psych, car, spdep
+)
+
+sort_df <- function( df, col, asc=T ){
+  sdf = df[ with(df, order(df[,c(col)], decreasing = !asc)), ]
+  return(sdf)
+}
+
+# generate a heatmap from a DF, similar to an excel spreadsheet with coloured cells
+FUN_df_to_heatmap <- function( num_mat, xlab, ylab, fout, colPalette = c("white", "royalblue") ){
+  print(paste("FUN_df_to_heatmap",xlab,ylab,fout))
+  row_labs = rownames(num_mat)
+  col_labs = colnames(num_mat)
+  print(nrow(num_mat))
+  print(ncol(num_mat))
+  print(class(num_mat))
+  print('debug1')
+  stopifnot(nrow(num_mat)>0,ncol(num_mat)>0)
+  # get max lengths of labels
+  maxchar1 <- max( nchar(as.character(col_labs)),na.rm = T )
+  maxchar2 <- max( nchar(as.character(row_labs)),na.rm = T )
+  valn1 = length(unique(as.character(col_labs)))
+  valn2 = length(unique(as.character(row_labs)))
+  
+  stopifnot( !is.na(maxchar1), !is.na(maxchar2), maxchar1>0, maxchar2>0, valn1>0, valn2>0)
+  # Based on http://sebastianraschka.com/Articles/heatmaps_in_r.html
+  w = h = 10
+  marg_w = marg_h = 20
+  pdf( fout, width=w, height=h ) 
+  my_palette <- colorRampPalette(colPalette)(n = 100)
+  sz = par("cex.main")
+  par(cex.main=.7)
+  
+  calcSz = function(x,n){
+    stopifnot( is.numeric(x), !is.na(x) )
+    sz = 2
+    if (n>=30) return(sz*.2)
+    
+    if (x>=120) return(sz*.2)
+    if (x>=80) return(sz*.3)
+    if (x>=40) return(sz*.5)
+    if (x>=20) return(sz*.7)
+    return(sz)
+  }
+  #print(paste(maxchar1,maxchar2))
+  colLabSz = calcSz(maxchar1,valn1)
+  rowLabSz = calcSz(maxchar2,valn2)
+  
+  heatmap.2(num_mat,
+            cellnote = num_mat,  # same data set for cell labels
+            main = paste(xlab,"vs",ylab,"\nFile:",fout), # heat map title
+            linecol = 'gray',
+            cexRow = rowLabSz, 
+            cexCol = colLabSz,
+            notecex = 0.5,
+            notecol="black",      # change font color of cell labels to black
+            density.info="none",  # turns off density plot inside color legend
+            trace="none",         # turns off trace lines inside the heat map
+            xlab = xlab,
+            ylab = ylab,
+            key = F, # hide legend
+            margins =c(marg_w,marg_h),     # widens margins around plot
+            col=my_palette,       # use on color palette defined earlier
+            #breaks=col_breaks,    # enable color transition at specified limits
+            dendrogram="none",     # only draw a row dendrogram
+            srtCol=45,
+            Rowv="NA",
+            Colv="Rowv")            # turn off column clustering
+  dev.off()    
+  par(cex.main=sz)
+  rm(marg_h,marg_w)
+}
+
+
+# compare two columns in a df
+FUN_gen_freq_matrix <- function( df, var1, var2, outf, doHeatmap = T, rowPercents = NA, rowPercentsOmit0 = T ){
+  #print(paste("FUN_gen_freq_matrix", var1, var2, outf, doHeatmap, length(rowPercents), rowPercentsOmit0))
+  stopifnot(class(df)=='data.frame')
+  
+  clean_var_names = function(x){
+    x = gsub("\\_+", " ", x)
+    x = make.names(trimws(x))
+    x = gsub("\\.+", ".", x)
+    x = gsub("NA\\.", "NOT_AVAIL", x)
+    x = gsub("^X", "", x)
+    x = gsub("\\.", " ", x)
+    return(x)
+  }
+  
+  gen_count_matrix = function(freqm,var1,var2){
+    freqm$ROW_SUM = rowSums(freqm) # sum rows
+    cols = names(freqm)
+    cols[is.na(cols)] = "NOT_AVAIL"
+    cols = as.character(cols)
+    names(freqm) = clean_var_names(cols)
+    rown = row.names(freqm)
+    rown[is.na(rown)] = 'NOT_AVAIL'
+    stopifnot( !any(is.na(rown)) )
+    row.names(freqm) = clean_var_names(rown)
+    rownames_df = data.frame(X=rown)
+    freqmout = cbind( rownames_df, freqm )
+    # data is ready (freqmout)
+    freqmout[,1] = clean_var_names(freqmout[,1])
+    names(freqmout) = clean_var_names(names(freqmout))
+    names(freqmout)[1] = "*"
+    return(freqmout)
+  }
+  
+  # important: this calculates the DIVERGENCE by COLUMN (and not ROW)
+  gen_divergence_matrix = function(freqmout, rowPercents){
+    rowPercents$VAL.x = clean_var_names(rowPercents$VAL.x)
+    stopifnot( length(freqmout$`*`)>0 )
+    stopifnot( length(intersect(unique(freqmout$`*`), unique(rowPercents$VAL.x))) > 0)
+    # merge data
+    m = merge(freqmout, rowPercents, by.x='*', by.y="VAL.x", all.x=T, all.y=F)
+    stopifnot(c("*","PC") %in% names(m))
+    resm = m[,c('*','PC')]
+    stopifnot( nrow(resm)>0, sum(resm$PC,na.rm = T)>0 )
+    cols = names(m[,2:(ncol(m)-2)])
+    stopifnot(length(cols)>0)
+    for (c in cols){
+      if(rowPercentsOmit0){
+        catpc = ifelse( m[,c]==0, NA, round( m[,c] / sum(m[,c],na.rm = T) * 100, 3) )
+      } else {
+        catpc = round( m[,c] / sum(m[,c],na.rm = T) * 100, 3)
+      }
+      resm[,paste0(c,'_div')] = round( catpc - m$PC, 3)
+    }
+    return(resm)
+  }
+  
+  stopifnot(var1 %in% names(df), var2 %in% names(df), nrow(df)>0)
+  if (!all(is.na(rowPercents))){
+    stopifnot( c('VAL.x','PC') %in% names(rowPercents) )
+  }
+  # Calc COUNTS
+  df[,var1] = make.names(df[,var1])
+  df[,var2] = make.names(df[,var2])
+  tabfreq = table( df[,c(var2,var1)], useNA = "ifany" )
+  freqm = as.data.frame.matrix(tabfreq)
+  freqmout = gen_count_matrix(freqm)
+  write_xlsx(freqmout, paste0(outf,'--data.xlsx'))
+    
+  if(doHeatmap){
+    # print plain heatmap of values
+    freqm$ROW_SUM = NULL # remove column
+    mat = as.matrix(freqm)
+    colnames(mat) = clean_var_names( colnames(mat) )
+    rownames(mat) = clean_var_names( rownames(mat) )
+    FUN_df_to_heatmap( mat, var1, var2, paste0(outf,'--heat.pdf') )
+    rm(mat)
+  }
+  
+  # calculate DIVERGENCES based on the rowPercents
+  if (!all(is.na(rowPercents))){
+    resm = gen_divergence_matrix(freqmout, rowPercents)
+    write_xlsx(resm, paste0(outf,'--diverg.xlsx'))
+    
+    # divergence heatmap
+    if (doHeatmap){
+      # generate heatmap of divergence values
+      resm = resm[ !is.na(resm[,2]), ] 
+      stopifnot(nrow(resm)>0,ncol(resm)>0)
+      mat = round(as.matrix(resm[,2:ncol(resm)]),1)
+      # col labels
+      colnames(mat)[1] = '[Areas %]'
+      colnames(mat) = gsub( '_div', ' ', colnames(mat))
+      colnames(mat) = trimws(gsub( '_', ' ', colnames(mat)))
+      # row labels
+      rownames(mat) = resm$`*`
+      
+      stopifnot( sum(!is.na(mat[,2])) > 0 ) # ensure non-NA values in the matrix
+      FUN_df_to_heatmap(mat, var1, var2,
+                        paste0(outf,'--diverg_heat.pdf'),
+                        colPalette = c("red", 'white', "green"))
+      rm(mat,rown)
+    }
+    rm(m,resm)
+  }
+  return(freqmout)
+}
+
+p_summary_list <- function( x, lab, sort_by_pc = T, top_n = NA ){
+  t = table(x, useNA = "always")
+  d = data.frame( VAL = t )
+  d$PC = round((d$VAL.Freq / sum(d$VAL.Freq)*100),2)
+  if (sort_by_pc)
+    d = sort_df(d,'PC',asc = F)
+  d$VAR = lab
+  stopifnot(nrow(d)>0)
+  if (!is.na(top_n))
+    return(head(d,top_n))
+  
+  return(d)
+}
+
+count_na <- function(x){
+  sum(is.na(x))
+}
+
+is_unique <- function(x){
+  length(x) == length(unique(x))
+}
+
+flattenCorrMatrix <- function(cormat, pmat) {
+  ut <- upper.tri(cormat)
+  data.frame(
+    row = rownames(cormat)[row(cormat)[ut]],
+    column = rownames(cormat)[col(cormat)[ut]],
+    cor  =(cormat)[ut],
+    p = pmat[ut]
+    )
+}
+
+# it generates a correlation matrix with p values (picked online)
+# includeGroups check the prefix of each variable
+correl_table <- function(x, method='pearson', includeGroups = F){
+  print("correl_table")
+  x <- as.matrix(x)
+  R <- round( rcorr(x, type=method)$r, 3 )
+  p <- round( rcorr(x, type=method)$P, 4 )
+  df = flattenCorrMatrix( R, p )
+  p = df$p
+  df$p_stars <- ifelse(p < .001, "***", ifelse(p < .01, "** ", ifelse(p < .05, "* ", " ")))
+  c = abs(df$cor)
+  df$cor_level <- ifelse(c < .1, "", ifelse(c < .4, "weak", ifelse(c < .7, "medium", "strong")))
+  df$method = method
+  if (includeGroups){
+    df$same_group = substr(df$row,0,4) == substr(df$column,0,4)
+  }
+  df
+}
+```
+
+# Pre-processing
+
+## Wikipedia places (2019)
+
+```{r}
+df = readRDS('../data/wikipedia_places/london_wikipedia_pages_all_sdf.rds')
+nrow(df)
+
+df = subset(df, df$language=='en' & df$gt_country=='GB')
+nrow(df)
+
+df@data$lon = as.data.frame(df@coords)$gt_lon
+df@data$lat = as.data.frame(df@coords)$gt_lat
+cols = c('page_id_pag','page_title','gt_region','lat','lon')
+write_csv(df@data[,cols],'../tmp/london_wikipedia_pages.csv')
+rm(df)
+```
+
+## Get OSM place names
+
+Get OpenStreetMap place names to localise FB groups.
+
+```{r eval=FALSE}
+
+dat <- opq('london uk') %>%
+  add_osm_feature(key="place") %>%
+  osmdata_sf()
+
+point_sdf = dat$osm_points[,c('osm_id','name','place')]
+point_sdf = point_sdf[!is.na(point_sdf$name),]
+point_sdf = point_sdf[!is.na(point_sdf$place),]
+nrow(point_sdf)
+unlink('../tmp/london_osm_place_points.geojson')
+st_write(point_sdf,'../tmp/london_osm_place_points.geojson')
+write_csv(point_sdf,'../tmp/london_osm_place_points.csv',na = '')
+rm(point_sdf)
+
+dat <- opq('london uk') %>%
+  add_osm_feature(key="railway", value = 'station') %>%
+  osmdata_sf()
+
+point_sdf = dat$osm_points[,c('osm_id','name','railway','station')]
+point_sdf = point_sdf[!is.na(point_sdf$name),]
+point_sdf = point_sdf[!is.na(point_sdf$railway),]
+unlink('../tmp/london_osm_train_stations_points.geojson')
+st_write(point_sdf,'../tmp/london_osm_train_stations_points.geojson')
+write_csv(point_sdf,'../tmp/london_osm_train_stations_points.csv',na = '')
+
+rm(dat)
+```
+
+
+## Load geographies
+
+Map used for data annotation in the project (ArcGIS Online):
+<https://www.arcgis.com/apps/mapviewer/index.html?webmap=5acdc3d0175a4e20999943898211f7eb>
+
+Note: London subregions from
+<https://data.london.gov.uk/dataset/sub-regions-london-plan-consultation-2009>
+
+Socio-economic data for analysis
+<https://www.london.gov.uk/what-we-do/research-and-analysis/people-and-communities/survey-londoners> ; 
+
+Indices of deprivation:
+borough level IMD summary measures; borough level domain summary measures
+<https://data.london.gov.uk/dataset/indices-of-deprivation>
+
+Survey of Londoners
+<https://data.london.gov.uk/dataset/survey-of-londoners-headline-findings>
+
+Hex geography of London boro: <https://github.com/houseofcommonslibrary/uk-hex-cartograms-noncontiguous>
+
+```{r}
+# London boroughs
+boros_gdf = st_read("../data/london_geographies/london_boroughs_profiles_2015.geojson")
+names(boros_gdf)
+plot(boros_gdf$geometry)
+
+# London boro cartogram
+boros_hex_gdf = st_read("../data/london_geographies/london_boro_hex_2019.gpkg") %>% filter(Group.labe == 'London') %>%
+  rename(name = cua.name, gss = cua.code) %>%
+  dplyr::select(name,gss,geom)
+
+# use hex cartogram
+boros_gdf = boros_hex_gdf
+
+# London wards with 2015 data
+fn = "../data/london_geographies/london_ward2011_profiles2015.geojson"
+file.remove(fn)
+gunzip(paste0(fn,".gz"), remove=F)
+wards_gdf = st_read(fn)
+file.remove(fn)
+names(wards_gdf)
+plot(wards_gdf$geometry)
+
+# load London parks
+osm_large_df = read_tsv('../data/london_geographies/greater_london_parks/greater_london_parks.tsv') %>%
+  dplyr::select(id, leisure, name)
+nrow(osm_large_df)
+
+osm_trainsv2_df = read_csv('../data/london_geographies/osm_place_names/london_osm_train_stations_points_v2.csv') %>% rename(osm_id=id) %>% mutate(place='station') %>% dplyr::select(osm_id, place)
+
+# get IMD data for London boroughs 2019
+depriv_df = read_excel('../data/deprivation/ID 2019 for London.xlsx', sheet = 5) %>% clean_names()
+nrow(depriv_df)
+names(depriv_df)
+
+depriv_detail_df = read_excel('../data/deprivation/ID 2019 for London.xlsx', sheet = 6) %>% clean_names() %>% janitor::remove_empty(which = "cols")
+nrow(depriv_detail_df)
+names(depriv_detail_df)
+
+# merge deprivation summary and detail
+depriv_df = depriv_df %>% left_join(depriv_detail_df, by='local_authority_district_name_2019')
+
+# add deprivation to boros_gdf
+boros_gdf = boros_gdf %>% left_join(depriv_df %>% dplyr::select(local_authority_district_name_2019, imd_average_score, imd_average_rank, imd_2019_local_concentration, income_average_score, education_skills_and_training_average_score, living_environment_average_score, barriers_to_housing_and_services_average_score) %>%
+    rename(name=local_authority_district_name_2019,
+           imd_income_average_score = income_average_score, 
+           imd_educ_average_score = education_skills_and_training_average_score,
+           imd_living_envi_average_score = living_environment_average_score,
+           imd_barrier_hous_serv = barriers_to_housing_and_services_average_score
+           ), by='name')
+
+```
+
+## Generate place name table
+
+For FB scrape
+
+```{r}
+point_sdf = st_read('../tmp/london_osm_place_points.geojson')
+head(point_sdf)
+head(boros_gdf)
+places_df = st_join(point_sdf, boros_gdf[,c('gss','name')])
+places_df = st_drop_geometry(places_df)
+places_df = unique(places_df)
+names(places_df) = c('osm_id','place_name','place_type','boro_gss','boro_name')
+
+places_df$osm_id = paste0('id:', places_df$osm_id)
+
+boro = unique(places_df[,c('boro_gss','boro_name')])
+boro$osm_id = 'borough'
+boro$place_name = '[borough]'
+boro$place_type = 'borough'
+
+places_df = rbind(places_df, boro)
+places_df = places_df[complete.cases(places_df),]
+places_df = places_df %>% arrange(boro_name, place_name)
+write.xlsx(places_df[,c('boro_gss','boro_name','osm_id','place_name')],'../tmp/osm_place_names_fb_collection.xlsx')
+rm(places_df)
+```
+
+## Load Facebook groups
+
+Latest input data: Sept 2022, `facebook_city_v1.xlsx`.
+Cleaned dataset: `facebook_city_data_groups_v1.xlsx`.
+
+### Merge manual groups and groups from Google
+
+Merge FB groups imported from Google in 2020 plus groups imported manually by Liam and Miguel in 2021.
+
+```{r, eval=FALSE}
+
+get_clean_fb_url = function(url){
+  bits = str_split(url, "/groups/", simplify = TRUE)
+  bits2 = str_split(bits[2], "/", simplify = TRUE)
+  clean_url = bits2[1]
+  stopifnot(!(grepl('facebook', clean_url)))
+  return(clean_url)
+}
+
+# data from Google Search
+ggroups = read_excel('../data/fb_groups-v3/sources/fb_groups_info_df_location_v6.xlsx')
+ggroups$fb_url_id = sapply(ggroups$url, get_clean_fb_url)
+nrow(ggroups)
+
+# manually collected data
+mgroups = read_excel('../data/fb_groups-v3/sources/osm_place_names_fb_collection-v5.xlsx')
+colnames(mgroups) = paste0('MANCOLL_',colnames(mgroups))
+mgroups$fb_url_id = sapply(mgroups$MANCOLL_URL, get_clean_fb_url)
+nrow(mgroups)
+
+all_groups = merge(ggroups, mgroups, by='fb_url_id', suffixes = c('gdatacoll_','mancoll_'), all = T)
+all_groups = sort_df(all_groups, c('MANCOLL_URL','url'))
+nrow(all_groups)
+all_groups = all_groups[!is.na(all_groups$fb_url_id),]
+nrow(all_groups)
+
+write.xlsx(all_groups, '../data/fb_groups-v3/fb_groups_info_df_location_v7.xlsx')
+
+summary(as.factor(all_groups$url))
+summary(as.factor(all_groups$MANCOLL_URL))
+nrow(all_groups[is.na(all_groups$url) & is.na(all_groups$MANCOLL_URL), ])
+
+# google groups: 1737
+# manual groups: 1894
+# groups in both: 398
+# total groups: 3233
+# google groups not in manual groups: 1339
+# manual groups not in google groups: 1496
+```
+
+### Generate groups for stats scraping
+
+```{r}
+
+# load groups
+fb_df = read.xlsx('../data/facebook_city_data/input/facebook_city_v1.xlsx', 1)
+nrow(fb_df)
+# normalise column names
+fb_df = fb_df %>% clean_names() %>%
+  filter(mancoll_url != 'https://www.facebook.com/groups/242995779144334/' | is.na(mancoll_url)) %>%
+  rename(google_url=url, google_id=group_uid)
+nrow(fb_df)
+
+# verify ID
+stopifnot(count_na(fb_df$fb_url_id)==0)
+stopifnot(is_unique(fb_df$fb_url_id))
+
+# remove invalid groups
+fb_df = fb_df %>% filter(!fb_url_id %in% c('KPCUK'))
+nrow(fb_df)
+
+# find URLs for stats scrape
+url_df = fb_df %>% select(fb_url_id, google_id, google_url, mancoll_url) %>% 
+       mutate(url = ifelse(is.na(google_url), mancoll_url, google_url))
+# save
+write.table(url_df, file = "../data/facebook_city_data/fb_groups_urls.tsv", sep = '\t', row.names = F)
+```
+
+### Merge stats with manual data
+
+```{r}
+fb_manual_df = fb_df %>% select(fb_url_id, google_id, google_url, mancoll_url, group_type,
+                  london_wide, sub_london, borough_name, osm_id,
+                  ward_gss, lat_long_google_maps, large_object_osm_id, 
+                  mancoll_boro_gss, mancoll_boro_name, mancoll_osm_id,
+                  mancoll_place_name, mancoll_url, mancoll_geo_recode, 
+                  recoded) %>% 
+  rename(group_uid=fb_url_id) %>% 
+  mutate(london_wide = ifelse(!is.na(london_wide), T, F),
+         recoded = ifelse(!is.na(recoded), T, F),
+         mancoll_geo_recode = ifelse(!is.na(tolower(mancoll_geo_recode)),T,F)) %>%
+  mutate(group_type=factor(group_type), sub_london=factor(sub_london),
+         borough_name=factor(borough_name),mancoll_osm_id=factor(mancoll_osm_id),
+         mancoll_geo_recode=factor(mancoll_geo_recode),
+         ward_gss=factor(ward_gss), mancoll_boro_name=factor(mancoll_boro_name),
+         recoded=factor(recoded), mancoll_boro_gss=factor(mancoll_boro_gss)) %>%
+  mutate(group_type_manual = factor(tolower(group_type))) %>% 
+  select(-group_type)
+  
+summary(fb_manual_df)
+summary(fb_manual_df$group_type_manual)
+summary(fb_manual_df$mancoll_boro_name)
+summary(fb_manual_df$borough_name)
+
+# merge borough information
+merge_boro_ = function(row){
+  val1 = row['mancoll_boro_name'][[1]]
+  val2 = row['borough_name'][[1]]
+  if (!is.na(val1) & !is.na(val2)){
+    if (val1 == val2) return(val1)
+    return(paste0(val1,'; ',val2, collapse=''))
+  }
+  if (is.na(val1) & !is.na(val2)) return(val2)
+  if (!is.na(val1) & is.na(val2)) return(val1)
+  return(NA)
+}
+
+# merge OSM information
+merge_osm_ = function(row){
+  val1 = row['osm_id'][[1]]
+  val2 = row['mancoll_osm_id'][[1]]
+  if (!is.na(val1) & !is.na(val2)){
+    if (val1 == val2) return(val1)
+    return(paste0(val1,'; ',val2, collapse=''))
+  }
+  if (is.na(val1) & !is.na(val2)) return(val2)
+  if (!is.na(val1) & is.na(val2)) return(val1)
+  return(NA)
+}
+
+# merge URL information
+merge_url_ = function(row){
+  val1 = row['google_url'][[1]]
+  val2 = row['mancoll_url'][[1]]
+  if (!is.na(val1) & !is.na(val2)){
+    if (val1 == val2) return(val1)
+    return(paste0(val1,'; ',val2, collapse=''))
+  }
+  if (is.na(val1) & !is.na(val2)) return(val2)
+  if (!is.na(val1) & is.na(val2)) return(val1)
+  return(NA)
+}
+
+fb_manual_df$borough_name_merged = apply(fb_manual_df, 1, merge_boro_)
+fb_manual_df = fb_manual_df %>% select(-mancoll_boro_name, -borough_name)
+summary(as.factor(fb_manual_df$borough_name_merged))
+
+fb_manual_df$group_url = apply(fb_manual_df, 1, merge_url_)
+fb_manual_df = fb_manual_df %>% select(-google_url, -mancoll_url)
+
+fb_manual_df$mancoll_osm_id =  gsub("id:", "", fb_manual_df$mancoll_osm_id)
+fb_manual_df = fb_manual_df %>% mutate(mancoll_osm_id = na_if(mancoll_osm_id, "borough"))
+
+fb_manual_df$osm_ids_merged = apply(fb_manual_df, 1, merge_osm_)
+fb_manual_df = fb_manual_df %>% select(-mancoll_osm_id, -osm_id)
+
+# validate attributes
+names(fb_manual_df)
+
+summary(!is.na(fb_manual_df$osm_id))
+summary(!is.na(fb_manual_df$large_object_osm_id))
+
+fb_manual_df$found_via = ifelse(is.na(fb_manual_df$google_id), 'google_search', 'facebook_search_manual')
+
+merged_fb_df = fb_manual_df %>% select(group_uid, group_url, found_via, 
+          group_type_manual, london_wide, sub_london, borough_name_merged, 
+          ward_gss, lat_long_google_maps,
+          osm_ids_merged, large_object_osm_id, mancoll_place_name, recoded) %>%
+          rename(place_name_manual = mancoll_place_name, 
+                 borough_name = borough_name_merged)
+
+# get group stats
+all_fb_stats_df = read_tsv('../data/facebook_city_data/fb_groups_activity_stats_df.tsv')
+all_fb_stats_df$stats_collection_date = '2022-09-26'
+names(all_fb_stats_df)
+# week_members_new is all zeros, excluded
+
+fb_stats_df = all_fb_stats_df %>% select(group_uid, group_name, description, privacy, found,
+        creation_year, creation_yymm, creation_date, fb_place, group_type, stats_collection_date,
+        members_n, lastmonth_posts, dailyposts, group_rules_str) %>% 
+  rename(fb_group_type = group_type, fb_description = description, 
+         fb_group_name = group_name, fb_privacy = privacy, fb_found = found) %>%
+  mutate(fb_group_type=factor(fb_group_type), fb_privacy=factor(fb_privacy),
+         creation_yymm=factor(creation_yymm), fb_place=factor(fb_place)) %>%
+  mutate(posts_per_member = round(lastmonth_posts/members_n,3))
+summary(fb_stats_df)
+
+# join manual info and stats
+nrow(fb_stats_df)
+nrow(merged_fb_df)
+
+fb_groups_df = merged_fb_df %>% left_join(fb_stats_df, 'group_uid') %>%
+  mutate(borough_name=as.factor(borough_name))
+nrow(fb_groups_df)
+
+rm(fb_manual_df,merged_fb_df,fb_stats_df, fb_df)
+
+# fix errors
+
+# incorrect OSM id
+fb_groups_df$osm_ids_merged = ifelse(fb_groups_df$group_uid %in% c('I9573','TeddingtonVillage'), '16486527',  fb_groups_df$osm_ids_merged)
+
+# remove incorrect sports groups (Premier League groups, e.g. Chelsea)
+nrow(fb_groups_df)
+fb_groups_df2 = fb_groups_df %>% filter(!(group_uid %in% c(464631257367234, 261306877616224, 411505183029726,
+  244567656651659, 238095083925462, 1828806570517507, 583884278917700, 1006607296028011, 1275419579304823,
+  423851088204461, 1240661229602623, 600021253974943, 1647138462232421, 'spursshow', 507549189423472,
+  'real-west-ham-fans-370969473326959', 1647138462232421, 'West-Ham-Diehard-Fans-857768617751818',
+  497702327245895, 'CPFCRevolution', 1689672804599624, 'CrystalPalaceFCSupportersClub', 375166063117487)))
+nrow(fb_groups_df2)
+
+# save clean file
+write_tsv(fb_groups_df2, file = "../data/facebook_city_data/facebook_city_data_groups_v1.tsv", 
+          na = '')
+write.xlsx(fb_groups_df2, file = "../data/facebook_city_data/facebook_city_data_groups_v1.xlsx", 
+          row.names=F)
+saveRDS(fb_groups_df2, "../data/facebook_city_data/facebook_city_data_groups_v1.rds")
+
+rm(fb_groups_df, fb_groups_df2)
+```
+
+
+### Assign groups to geographies
+
+Columns: in_uk in_london London_wide Sub_London Borough_name
+District(wiki) OSM_ID Ward_GSS\
+LatLong(GoogleMaps) Large_object_OSM_ID
+
+-   ignore: District(wiki)
+
+#### Extract spatial units from groups
+
+5 scales: 1) Borough 2) Ward 3) OSM_ID: point representing suburb 4)
+Large_object_OSM_ID: parks and train stations 5) Lat/lon: point of
+interest from Google Maps
+
+```{r}
+fb_df = readRDS("../data/facebook_city_data/facebook_city_data_groups_v1.rds")
+nrow(fb_df)
+
+# remove London wide groups
+# remove London regional groups
+fb_boro_df = fb_df %>% filter(!is.na(borough_name))
+nrow(fb_boro_df)
+summary(as.factor(fb_boro_df$borough_name))
+
+# save FB group attributes
+fbg_attr_df = fb_boro_df %>%
+  select(group_uid,group_type_manual,fb_privacy,creation_year,fb_place,
+         members_n,dailyposts,lastmonth_posts, posts_per_member)
+nrow(fbg_attr_df)
+saveRDS(fbg_attr_df, '../tmp/fb_groups_attr_df.rds')
+
+# select geographic columns
+fb_geo_df = fb_boro_df %>% select(group_uid, borough_name, ward_gss, osm_ids_merged,
+                large_object_osm_id, lat_long_google_maps) %>% rename(osm_id=osm_ids_merged)
+names(fb_boro_df)
+
+# split multi-values into separate rows
+sep = ";"
+vars = c("borough_name","ward_gss","osm_id","large_object_osm_id","lat_long_google_maps")
+ii = seq(length(vars))
+
+# calculate weight for cases with multiple geographic references
+calc_weight_ = function(df){
+  df = unique(df)
+  df = df %>% filter(!is.na(geo_value))
+  counts_df = df %>% count(group_uid) %>% mutate(n=1/n)
+  df = df %>% left_join(counts_df, 'group_uid') %>% rename(weight=n)
+  return(df)
+}
+
+ldf = lapply(ii, function(i){
+  var = vars[i]
+  print(var)
+  fb_geo_df[,var] = trimws(fb_geo_df[,var])
+  df = separate_rows(fb_geo_df[,c("group_uid",var)], var, sep = sep)
+  names(df) = c("group_uid","geo_value")
+  df = df[!(is.na(df$geo_value)),]
+  df = df[df$geo_value != '', ]
+  df = df[!is.na(df$geo_value), ]
+  df$geo_value = trimws(df$geo_value)
+  df = calc_weight_(df)
+  df$scale = i
+  df$var_name = var
+  df
+})
+geo_df = do.call(rbind, ldf)
+
+# stats of geo referencing
+geo_counts_df = geo_df %>% select(group_uid,var_name) %>% unique() %>% count(var_name) %>% 
+  mutate(PC = round(n/nrow(fb_df)*100,1))
+print(geo_counts_df)
+
+# replace borough names with GSS
+boro = boros_gdf$gss
+names(boro) = boros_gdf$name
+geo_df$geo_value = recode(geo_df$geo_value, !!!boro)
+rm(boro)
+
+# find groups with/without geo info
+# geogroups
+length(unique(geo_df$group_uid))
+# groups without geo
+length(unique(fb_geo_df$group_uid))
+# intersection
+length(intersect(unique(geo_df$group_uid), unique(fb_geo_df$group_uid)))
+# difference
+length(setdiff(unique(fb_geo_df$group_uid),unique(geo_df$group_uid)))
+
+saveRDS(geo_df, '../tmp/fb_groups_geo_df.rds')
+```
+
+#### Derived attributes: size, geoscale, activity
+
+```{r}
+fb_df = readRDS("../data/facebook_city_data/facebook_city_data_groups_v1.rds")
+geo_df = readRDS('../tmp/fb_groups_geo_df.rds')
+
+# === size ===
+# define size
+fb_df$size = cut(fb_df$members_n, 
+      breaks = c(0,3000,10000,30000,10000000),
+      labels = c('small','medium','large','huge'),
+      include.lowest = TRUE)
+summary(fb_df$size)
+
+# === user activity ===
+# define user engagement
+# lastmonth_posts is capped at 10000
+summary(fb_df$lastmonth_posts)
+hist(log10(fb_df$lastmonth_posts))
+
+fb_df$activity_level = cut(fb_df$lastmonth_posts, 
+      breaks = c(0, .1, 30, 300, 3000, 30000),
+      labels = c('inactive','low','medium','high','very high'),
+      include.lowest = TRUE)
+plot(fb_df$activity_level)
+summary(fb_df$activity_level)
+
+# posts/user ratio
+fb_df$posts_per_1kmember = fb_df$lastmonth_posts / (fb_df$members_n/1000)
+summary(fb_df$posts_per_1kmember)
+
+ggplot(data.frame(fb_df$posts_per_1kmember+1), aes(fb_df$posts_per_1kmember+1)) + geom_histogram(bins = 30) + scale_x_log10()
+
+fb_df$activity_per_user_level = cut(fb_df$posts_per_1kmember, 
+      breaks = c(0, 1, 10, 50, 5000),
+      labels = c('inactive','low','medium','high'),
+      include.lowest = TRUE)
+summary(fb_df$activity_per_user_level)
+plot(fb_df$activity_per_user_level)
+# === geoscale ===
+# get % of only London wide
+sum(fb_df$london_wide)
+
+fb_df$geoscale = ifelse(fb_df$london_wide, '0_london', NA)
+
+fb_df$geoscale = ifelse(!is.na(fb_df$sub_london), '1_subregion', fb_df$geoscale)
+
+# boro
+fb_df$geoscale = ifelse(!is.na(fb_df$borough_name) & is.na(fb_df$ward_gss) &
+                      is.na(fb_df$osm_ids_merged) &
+                      is.na(fb_df$lat_long_google_maps) & 
+                      is.na(fb_df$large_object_osm_id), '2_borough',
+                      fb_df$geoscale)
+
+# ward
+fb_df$geoscale = ifelse(!is.na(fb_df$ward_gss) & is.na(fb_df$osm_ids_merged) &
+                      is.na(fb_df$lat_long_google_maps) & 
+                      is.na(fb_df$large_object_osm_id), 'ward', fb_df$geoscale)
+
+# POI
+fb_df$geoscale = ifelse(!is.na(fb_df$lat_long_google_maps), '6_poi', fb_df$geoscale)
+
+# merge OSM objects
+osm_df = read_csv('../data/london_geographies/osm_place_names/london_osm_place_points-v2.csv') %>%
+  mutate(osm_id=as.character(osm_id)) %>% select(osm_id, place)
+train_osm_df = read_csv('../data/london_geographies/osm_place_names/london_osm_train_stations_points_v1.csv') %>%
+  mutate(osm_id=as.character(osm_id), place=railway) %>% 
+  select(osm_id, place)
+osm_df = bind_rows(osm_df, train_osm_df) %>% unique()
+
+osm_parks_stations_df = bind_rows(osm_trainsv2_df, 
+  osm_large_df %>% rename(osm_id = id, place=leisure) %>% select(osm_id, place))
+
+osm_df = bind_rows(osm_df, osm_parks_stations_df) %>% unique()
+summary(as.factor(osm_df$place))
+
+# join OSM information
+osm_groups_df = geo_df %>% filter(var_name=='osm_id' | var_name=='large_object_osm_id') %>% 
+  rename(osm_id=geo_value) %>% 
+  left_join(osm_df, by='osm_id')
+summary(as.factor(osm_groups_df$place))
+
+# get unique counts of OSM types
+osm_matrix = osm_groups_df %>% select(group_uid, place) %>% mutate(place=as.factor(place), n=T) %>% 
+  unique() %>% pivot_wider(names_from=place, values_from=n) %>% replace(is.na(.), 0) #%>%
+  #select(-group_uid)
+
+nrow(osm_matrix)
+
+df = data.frame()
+
+# count OSM train stations only
+df = bind_rows(df, osm_matrix %>% filter(station) %>% mutate(geo_scale='station'))
+
+# count OSM parks only
+df = bind_rows(df, osm_matrix %>% filter(park & !station)  %>% mutate(geo_scale='5_park'))
+
+# count OSM neighbourhood only
+df = bind_rows(df, osm_matrix %>% filter(neighbourhood & !station) %>% mutate(geo_scale='neighbourhood'))
+
+df = bind_rows(df, osm_matrix %>% filter(locality) %>% mutate(geo_scale='locality'))
+
+# count OSM quarter only
+df = bind_rows(df, osm_matrix %>% filter(quarter & !neighbourhood & !station) %>% mutate(geo_scale='quarter'))
+
+# count OSM village only
+df = bind_rows(df, osm_matrix %>% filter(village & !quarter & !neighbourhood & !station) %>% 
+                 mutate(geo_scale='village'))
+
+# count OSM town only
+df = bind_rows(df, osm_matrix %>% filter(town & !village & !quarter & !neighbourhood & !station) %>% mutate(geo_scale='town'))
+
+# count OSM suburb only
+df = bind_rows(df, osm_matrix %>% filter(suburb & !town & !village & !quarter & !neighbourhood & !station) %>% mutate(geo_scale='suburb'))
+
+fb_df1 = fb_df %>% left_join(df %>% select(group_uid, geo_scale) %>% rename(osm_geo_scale=geo_scale), by='group_uid')
+
+rm(df)
+
+fb_df1$geoscale = ifelse(is.na(fb_df1$geoscale), fb_df1$osm_geo_scale, fb_df1$geoscale) 
+fb_df1$osm_geo_scale = NULL
+
+# merge geoscales
+# merge locality with neighborhood and village and quarter and station (neighborhood); merge stations with POI; merge suburb and town and ward (suburb);
+fb_df1$geoscale = as.character(fb_df1$geoscale)
+fb_df1$geoscale2 = ifelse(fb_df1$geoscale %in% c('locality','village','quarter','station','neighbourhood'), '4_neighbourhood', fb_df1$geoscale)
+fb_df1$geoscale2 = ifelse(fb_df1$geoscale2 %in% c('town','ward','suburb'), '3_suburb', fb_df1$geoscale2)
+fb_df1$geoscale2 = as.factor(fb_df1$geoscale2)
+
+fb_df1 = fb_df1 %>% rename(geoscale=geoscale2, geoscale_l2=geoscale)
+fb_df1$geoscale_l2 = as.factor(fb_df1$geoscale_l2)
+
+# separate geoscale and numeric code
+fb_df1 = fb_df1 %>% separate(geoscale, c('geoscale_level', 'geoscale_type'), remove=F) %>%
+  mutate(geoscale=as.factor(geoscale), geoscale_level=as.factor(geoscale_level),
+         geoscale_type=as.factor(geoscale_type))
+
+summary(fb_df1$geoscale)
+summary(fb_df1$geoscale_level)
+summary(fb_df1$geoscale_type)
+summary(fb_df1$geoscale_l2)
+
+saveRDS(fb_df1, "../data/facebook_city_data/facebook_city_data_groups_v2.rds")
+write.xlsx(fb_df1, "../data/facebook_city_data/facebook_city_data_groups_v2.xlsx")
+
+rm(fb_df1,fb_df)
+```
+
+# FB group analysis
+
+## Basic FB groups stats
+
+Sept 2022 dataset
+
+### Non-spatial stats
+
+```{r}
+# FB attributes, exclude NOT FOUND groups
+fbg_attr_df = readRDS('../data/facebook_city_data/facebook_city_data_groups_v2.rds') %>%
+  rename(group_type = group_type_manual) %>% dplyr::select(-group_rules_str, -fb_description,
+  stats_collection_date, -recoded)
+nrow(fbg_attr_df)
+summary(fbg_attr_df$fb_found)
+
+fbg_attr_df = fbg_attr_df %>% filter(fb_found)
+dim(fbg_attr_df)
+
+names(fbg_attr_df)
+#sample_n(fbg_attr_df, 10)
+
+print(paste("N groups =",nrow(fbg_attr_df)))
+
+# find size groups
+
+# classify group sizes based on members
+p <- ggplot(fbg_attr_df %>% filter(members_n < 50000), aes(x=members_n)) + #scale_y_log10() +
+  geom_histogram(color="white", fill="lightblue") + #scale_y_log10() +
+  theme_light() +
+  ggtitle(paste0("Facebook Groups histogram log (N=", nrow(fbg_attr_df),")")) + 
+  ylab("N of Facebook groups")
+print(p)
+
+df = fbg_attr_df
+
+print("Group types")
+types_df = df %>% tabyl(group_type) %>% arrange(desc(n)) %>% 
+  mutate(percent=round(percent*100,1))
+print(types_df)
+# add row for small groups
+types_df2 = types_df[types_df$percent >= 1 , ]
+types_df2 = bind_rows(types_df2, tibble(group_type = 'zz OTHERS', 
+                                  n = sum(types_df[types_df$percent < 1 , ]$n),
+                                  percent = sum(types_df[types_df$percent < 1 , ]$percent)))
+
+p <- ggplot(data=types_df, aes(x=reorder(group_type, percent), y=percent, label=n)) +
+    theme_light() +
+    geom_bar(stat="identity", fill='deepskyblue2', color='white') + coord_flip()
+print(p)
+ggsave('../tmp/group_types_barchart_all.pdf', p, width = 5, height = 5)
+
+p1 <- ggplot(data=types_df2, aes(x=reorder(group_type, percent), y=percent)) +
+    geom_bar(stat="identity", fill='deepskyblue2', color='white') + 
+    geom_text(aes(label = n), hjust = -0.1, color='deepskyblue2', size=2.6) +
+    theme_light() + ylim(c(0,20.5)) +
+    coord_flip()
+print(p1)
+ggsave('../tmp/group_types_barchart.pdf', p1, width = 6, height = 4)
+
+print("Group type stats")
+tstats_df = df %>% group_by(group_type) %>%
+  summarise(
+    count = n(),
+    count_pc = round(n()/nrow(df)*100,1),
+    members_tot = sum(members_n, na.rm = T),
+    members_mean = round(mean(members_n, na.rm = T),1),
+    members_med = median(members_n, na.rm = T),
+    members_max = max(members_n, na.rm = T),
+    members_skew = round(skewness(members_n, na.rm=T),1),
+    posts_tot = sum(lastmonth_posts, na.rm = T),
+    posts_med = median(lastmonth_posts, na.rm = T),
+    posts_per_member_mean = round(mean(posts_per_member, na.rm = T),2),
+    posts_per_member_med = round(median(posts_per_member, na.rm = T),2),
+  ) %>% arrange(desc(count))
+print(tstats_df)
+
+# bar chart for total posts per category
+p <- ggplot(data=tstats_df, aes(x=reorder(group_type, posts_tot), y=posts_tot)) +
+    theme_light() +
+    geom_bar(stat="identity", fill='deepskyblue2', color='white') + coord_flip()
+print(p)
+ggsave('../tmp/group_types_barchart_nposts.pdf', p)
+
+# summary chart of group types
+tstats_df$subscription_pc = round(proportions(tstats_df$members_tot)*100,1)
+tstats_df$posts_pc = round(proportions(tstats_df$posts_tot)*100,1)
+tstats_df2 = tstats_df %>% dplyr::select(group_type, count, count_pc, subscription_pc, posts_pc)
+tstats_df2 = bind_rows(tstats_df2, tibble(group_type = 'zz OTHERS', 
+                  count = sum(tstats_df2[tstats_df2$count_pc <= 1, ]$count),
+                  count_pc = sum(tstats_df2[tstats_df2$count_pc <= 1, ]$count_pc),
+                  subscription_pc = sum(tstats_df2[tstats_df2$count_pc <= 1, ]$subscription_pc),
+                  posts_pc = sum(tstats_df2[tstats_df2$count_pc <= 1, ]$posts_pc)))
+tstats_df2 = tstats_df2[tstats_df2$count_pc > 1, ]
+
+write_xlsx(tstats_df, '../tmp/group_types_barchart_facets_detail.xlsx')
+write_xlsx(tstats_df2, '../tmp/group_types_barchart_facets.xlsx')
+
+tstats_df2_long = tstats_df2 %>% gather(key = "grouptype_att", value = "measurement", count_pc, subscription_pc, posts_pc, -group_type)
+
+#p <- ggplot(data=types_df, aes(x=reorder(group_type, n), y=n, 
+p1 = ggplot(data = tstats_df2_long, aes(x = reorder(group_type, measurement), 
+                                        y = measurement, fill = grouptype_att)) +
+#p1 <- ggplot(data=tstats_df2_long, aes(x=reorder(group_type, measurement), y=measurement)) +
+    #geom_col(stat="identity", color='white') + 
+    #geom_col(position = 'dodge') + 
+    geom_col() + 
+    #geom_text(aes(label = ), hjust = -0.1, color='deepskyblue2', size=2.6) +
+    theme_light() + #ylim(c(0,20.5)) +
+    coord_flip()
+print(p1)
+ggsave('../tmp/group_types_barchart_summary.pdf', p1, width = 8, height = 4)
+
+# facets
+p1 = ggplot(data = tstats_df2_long, aes(x = reorder(group_type, measurement), 
+                                        y = measurement, fill=grouptype_att)) +
+    geom_col() + theme_light() +
+    facet_wrap(~grouptype_att, scales="free_x") +
+    coord_flip()
+print(p1)
+ggsave('../tmp/group_types_barchart_facets.pdf', p1, width = 9, height = 3.6)
+
+# total posts (log)
+p <- ggplot(data=tstats_df, aes(x=reorder(group_type, posts_tot), y=log10(posts_tot))) +
+    theme_light() +
+    geom_bar(stat="identity", fill='deepskyblue2', color='white') + coord_flip()
+print(p)
+ggsave('../tmp/group_types_barchart_nposts_log.pdf', p)
+
+# median posts
+p <- ggplot(data=tstats_df, aes(x=reorder(group_type, posts_med), y=posts_med)) +
+    theme_light() +
+    geom_bar(stat="identity", fill='deepskyblue2', color='white') + coord_flip()
+print(p)
+ggsave('../tmp/group_types_barchart_nposts_median.pdf', p)
+
+write.xlsx(tstats_df, "../tmp/fb_groups_stats_by_type.xlsx")
+```
+
+Group sizes vs type
+
+```{r}
+# pivot size vs group_type
+groups_types_sizes1 = df %>% count(size, group_type)
+groups_types_sizes1$pc = round(groups_types_sizes1$n / nrow(df) * 100, 1)
+stopifnot(sum(groups_types_sizes1$n) == nrow(df))
+# save results in long form
+write.xlsx(groups_types_sizes1, "../tmp/fb_groups_types_by_sizes_long.xlsx")
+
+groups_types_sizes = groups_types_sizes1 %>% dplyr::select(-pc) %>% 
+  pivot_wider(names_from = group_type, values_from = n, values_fill = 0) %>% 
+  rotate_df(cn=T) #%>% rename(unknown = 5) %>% select(-unknown)
+stopifnot(sum(groups_types_sizes)==nrow(df))
+# add totals and percentages
+tot_groups_n = sum(groups_types_sizes)
+
+groups_types_sizes$tot = rowSums(groups_types_sizes)
+groups_types_sizes_pc = round(groups_types_sizes/tot_groups_n*100,2)
+
+groups_types_sizes = groups_types_sizes %>% arrange(desc(tot)) 
+groups_types_sizes = groups_types_sizes %>% add_column(group_type = row.names(groups_types_sizes), .before = "small")
+groups_types_sizes_pc = groups_types_sizes_pc %>% arrange(desc(tot)) 
+groups_types_sizes_pc = groups_types_sizes_pc %>% add_column(group_type = row.names(groups_types_sizes_pc), .before = "small")
+
+# save results
+write.xlsx(groups_types_sizes, "../tmp/fb_groups_types_by_sizes.xlsx")
+write.xlsx(groups_types_sizes_pc, "../tmp/fb_groups_types_by_sizes_pc.xlsx")
+
+# find largest groups by several attributes
+print("Largest groups")
+top_n = 30
+top_groups = tibble()
+top_groups = bind_rows(top_groups, fbg_attr_df %>% arrange(desc(members_n)) %>% mutate(sorting='top_members') %>% slice_head(n=top_n))
+
+top_groups = bind_rows(top_groups, fbg_attr_df %>% arrange(desc(lastmonth_posts)) %>% mutate(sorting='top_lastmonth_posts') %>% slice_head(n=top_n))
+
+top_groups = bind_rows(top_groups, fbg_attr_df %>% arrange(desc(posts_per_member)) %>% mutate(sorting='top_posts_per_member') %>% slice_head(n=top_n))
+write.xlsx(top_groups, "../tmp/fb_groups_top.xlsx")
+
+# plot attributes
+for (attrib in (c("members_n","lastmonth_posts","posts_per_member"))){
+  print(attrib)
+  print(summary(df[,c(attrib)]))
+  transfattr = paste0(attrib,"_transf")
+  df[,c(transfattr)] = df[,c(attrib)]+1
+  print(summary(df[,c(transfattr)]))
+  # plot
+  p <- ggplot(df, aes_string(x=transfattr)) + #scale_y_log10() +
+    geom_histogram(color="white", fill="lightblue") + scale_y_log10() +
+    #geom_density(color="white", fill="lightblue") + 
+    theme_light() +
+    ggtitle(paste0("Facebook Groups histogram log (N=", nrow(df),")")) + 
+    xlab(attrib) +
+    ylab("N of Facebook groups")
+  print(p)
+  
+  p <- ggplot(df, aes_string(x=transfattr)) + #scale_y_log10() +
+    #geom_histogram(color="white", fill="lightblue") + scale_y_log10() +
+    geom_density(color="white", fill="lightblue") + scale_x_log10() +
+    theme_light() +
+    ggtitle(paste0("Facebook Groups density log (N=", nrow(df),")")) + 
+    xlab(attrib) +
+    ylab("N of Facebook groups")
+  print(p)
+}
+```
+
+### 2 var pivots
+
+```{r}
+# Plot the pivot between two variables with tiles (df is in short form)
+plot_2var_tiles = function(df, var1, var2, w, h, fout){
+  fn = paste0(fout, '--', var1, '-', var2,'-')
+  df$var1 = df[,var1]
+  df$var2 = df[,var2]
+  
+  ddf = df %>% count(var1, var2) %>% rename(value=n) %>% complete(var1,var2)
+  write_xlsx(ddf, paste0(fn,'data.xlsx'))
+  
+  ddf$label = ddf$value
+  # ddf$value = log(ddf$value+1)
+  ddf$value = ddf$value
+  
+  palette="GnBu"
+  palette="YlGnBu"
+  #palette="YlOrRd"
+  #limit_val = c(5, max(ddf$value))
+  p = ggplot(ddf, aes(x=var1, y=reorder(var2, desc(var2)), fill=value, label=label)) + 
+    #geom_ribbon(aes(x=r, ymax = hi-r, ymin = lo-r), alpha = 0.2, fill = "gray") +
+    #geom_line(aes(linetype=gpoi_type, color=gpoi_type)) +
+    #geom_tile(subset(ddf, is.na(ddf$value)), fill='red') + 
+    geom_tile(color = "white", lwd = 1, linetype = 1) +
+    geom_text(size = 2, color="grey50") +   
+    theme_light() +
+    theme(panel.background=element_rect(fill="white")) + 
+    #theme_void() +
+    theme(axis.text.x = element_text(angle = 50, hjust = 1)) +
+    #scale_fill_viridis() + 
+    scale_fill_distiller(palette=palette, direction = 1, na.value="white") + # PuBuGn , limits = limit_val
+    #scale_fill_distiller(palette = "Spectral")
+    xlab(var1) + ylab(var2) + 
+    #geom_vline(aes(xintercept=seq(1,nrow(ddf))+.5),colour="grey50",size=.4) + # vertical lines
+    ggtitle("Pivot ", subtitle=paste0(var1, ' vs ', var2))
+  
+  ggsave(paste0(fn,'tiles.pdf'), p, width=w, height=h)
+}
+
+# load data
+group_df = readRDS('../data/facebook_city_data/facebook_city_data_groups_v2.rds') %>%
+  filter(fb_found) %>% rename(group_type = group_type_manual)
+nrow(group_df)
+
+# combine two vars
+plot_2var_tiles(group_df, "geoscale", "group_type", 5.5, 5.8, '../tmp/fb_groups_2var')
+plot_2var_tiles(group_df, "geoscale", "size", 3.5, 3.1, '../tmp/fb_groups_2var')
+
+plot_2var_tiles(group_df, "size", "group_type", 5.1, 6.2, '../tmp/fb_groups_2var')
+plot_2var_tiles(group_df, "size", "geoscale", 3.5, 3.5, '../tmp/fb_groups_2var')
+
+plot_2var_tiles(group_df, "activity_level", "group_type", 5.3, 6.7, '../tmp/fb_groups_2var')
+plot_2var_tiles(group_df, "activity_level", "activity_per_user_level", 3.5, 2.9, '../tmp/fb_groups_2var')
+
+plot_2var_tiles(group_df, "activity_per_user_level", "group_type", 5, 5, '../tmp/fb_groups_2var')
+plot_2var_tiles(group_df, "activity_per_user_level", "size", 3, 2.7, '../tmp/fb_groups_2var')
+plot_2var_tiles(group_df, "activity_level", "size", 3, 2.7, '../tmp/fb_groups_2var')
+plot_2var_tiles(group_df, "activity_per_user_level", "geoscale", 3.6, 4, '../tmp/fb_groups_2var')
+```
+
+## Spatial analysis
+
+### Calculate borough stats
+
+```{r}
+group_df = readRDS('../data/facebook_city_data/facebook_city_data_groups_v2.rds') %>%
+  filter(fb_found) %>% rename(group_type = group_type_manual) %>% mutate(borough_name = str_trim(borough_name, side = "both")) %>% filter(!is.na(borough_name))
+nrow(group_df) # 2764
+summary(as.factor(group_df$borough_name))
+sum(table(group_df$borough_name))
+print(paste('groups w boros =', group_df %>% nrow())) # 2764
+
+# get weights for boroughs
+group_boros = group_df %>% dplyr::select(group_uid, borough_name) %>% 
+  separate_rows(borough_name, sep = ';', convert=T) %>% 
+  mutate(borough_name = str_trim(borough_name, side = "both")) %>% unique()
+
+nrow(group_boros) # 2829
+length(unique(group_boros$group_uid)) # 2743
+
+summary(as.factor(group_boros$borough_name))
+
+group_boros = group_boros %>% count(group_uid) %>% left_join(group_boros, by = 'group_uid') %>%
+  mutate(weight = 1/n) %>% dplyr::select(-n) %>% unique()
+nrow(group_boros) # 2829
+sum(group_boros$weight) # 2743
+
+# add attributes
+group_boros_attr = group_boros %>% left_join(group_df %>% 
+  dplyr::select(group_uid, group_type, geoscale, members_n, size, lastmonth_posts, 
+         activity_level, activity_per_user_level) %>% unique(),
+  by = 'group_uid') %>% unique()
+names(group_boros_attr) # 
+nrow(group_boros_attr) # 2849
+sum(group_boros_attr$weight) # 2762
+
+print("Calc borough stats")
+# get total count of groups per boro
+boro_stats = group_boros %>% group_by(borough_name) %>%
+  summarise(weight_sum = sum(weight)) %>% rename(var1=borough_name) %>% 
+  mutate(var1_name='borough_name', var2_name='total', var2='all')
+
+# get partial counts for each attribute
+dims = c("geoscale",'group_type','size','activity_level')
+for (var2 in dims){
+  var1  = 'borough_name'  
+  df = group_boros_attr %>% group_by(!!as.name(var1), !!as.name(var2)) %>%
+    summarise(weight_sum = sum(weight)) %>% complete(!!as.name(var1), !!as.name(var2))
+  names(df) = c('var1','var2','weight_sum')
+  df$var1_name = var1
+  df$var2_name = var2
+  boro_stats = bind_rows(boro_stats, df)
+  rm(df)
+}
+
+# get number of likes/subscriptions
+group_boros_attr$weighted_members_n = group_boros_attr$members_n * group_boros_attr$weight
+likes_df = group_boros_attr %>% group_by(borough_name) %>%
+    summarise(weight_sum = round(sum(weighted_members_n))) %>% 
+    mutate(var1_name='borough_name', var2_name='total', var2='likes') %>%
+    rename(var1=borough_name)
+boro_stats = bind_rows(boro_stats, likes_df)
+rm(likes_df)
+
+# get total number of posts
+group_boros_attr$weighted_posts_n = round(group_boros_attr$lastmonth_posts * group_boros_attr$weight,1)
+
+posts_df = group_boros_attr %>% group_by(borough_name) %>%
+    summarise(weight_sum = round(sum(weighted_posts_n))) %>% 
+    mutate(var1_name='borough_name', var2_name='total', var2='lastm_posts') %>%
+    rename(var1=borough_name)
+boro_stats = bind_rows(boro_stats, posts_df)
+rm(posts_df)
+
+boro_stats$weight_sum[is.na(boro_stats$weight_sum)] = 0
+boro_stats$weight_sum = round(boro_stats$weight_sum,2)
+summary(boro_stats)
+
+# calculate values by 100,000 pop
+# calc pop values
+stopifnot(nrow(boros_gdf) > 0)
+setdiff(unique(boros_gdf$name), unique(boro_stats$var1))
+boro_pop_df = boro_stats %>% left_join(boros_gdf %>% st_drop_geometry() %>% rename(var1=name) 
+                  %>% dplyr::select(var1, gla_population_estimate_2017), by = 'var1') %>%
+                  mutate(weight_sum = weight_sum / gla_population_estimate_2017 * 100000,
+                         var2=paste0(var2,'_p100k')) %>% dplyr::select(-gla_population_estimate_2017)
+summary(boro_pop_df$weight_sum)
+
+# combine counts and pop data
+boro_stats$var2 = paste0(boro_stats$var2,'_cnt')
+boro_stats = bind_rows(boro_stats, boro_pop_df) %>% rename(value=weight_sum)
+
+# ---------------------------------------------
+# generate boro columns (wide data frame)
+# ---------------------------------------------
+res = list()
+for (var2 in c('total', dims)){
+  print(var2)
+  df = boro_stats %>% filter(var2_name == !!var2)
+  df$var2 = paste0(df$var2_name, '-', df$var2)
+  df = df %>% pivot_wider(names_from = var2, values_from = value) %>% 
+    dplyr::select(-var1_name, -var2_name) %>% clean_names()
+  print(nrow(df))
+  res = c(res, df)
+}
+boro_stats_cols = bind_cols(res)
+boro_stats_cols$borough_name = boro_stats_cols[[1]]
+boro_stats_cols = boro_stats_cols %>% relocate(borough_name) %>% dplyr::select(-starts_with("var"))
+rm(res)
+
+# write results
+write_xlsx(boro_stats_cols, '../tmp/fb_groups_borough_stats.xlsx')
+saveRDS(boro_stats_cols, '../tmp/fb_groups_borough_stats.rds')
+
+write_xlsx(boro_stats, '../tmp/fb_groups_borough_stats_long.xlsx')
+saveRDS(boro_stats, '../tmp/fb_groups_borough_stats_long.rds')
+
+rm(boro_stats)
+```
+
+### Viz borough stats tiles
+
+```{r}
+boro_df = readRDS('../tmp/fb_groups_borough_stats_long.rds')
+boro_df$var1 = as.character(boro_df$var1)
+boro_df$var2 = as.character(boro_df$var2)
+boro_df$weight_sum = round(boro_df$value, 1)
+
+plot_tiles_boro_vs_attr = function(df, attr, fout, w, h, factor_order=NA, bScaledPop=F){
+  df = df %>% filter(var2_name==attr)
+  print(nrow(df))
+  df$label = df$weight_sum
+  # ddf$value = log(ddf$value+1)
+  df$value = df$weight_sum
+  
+  if (!is.na(factor_order)){
+    df$var2 = ordered(df$var2, levels = factor_order)
+  }
+  
+  # calculate z score for each category
+  df$zscore = round(ave(df$weight_sum, df$var2, FUN=scale),1)
+  zlimit <- max(abs(df$zscore),na.rm = T) * c(-1, 1)
+  #df$zscore = round(scale(df$weight_sum),1)
+  if (bScaledPop) tit = "Borough statistics (100k ppl)"
+  else tit = "Borough statistics (counts)"
+  #palette="GnBu"
+  palette="YlGnBu"
+  #palette="YlOrRd"
+  #limit_val = c(5, max(ddf$value))
+  # -----------------------------------
+  # plot with absolute values
+  # -----------------------------------
+  p = ggplot(df, aes(x=var2, y=reorder(var1, desc(var1)), fill=value, label=label)) + 
+    geom_tile(color = "white", lwd = 1, linetype = 1) +
+    geom_text(size = 2, color="grey50") +   
+    theme_light() +
+    theme(panel.background=element_rect(fill="white")) + 
+    #theme_void() +
+    theme(axis.text.x = element_text(angle = 50, hjust = 1)) +
+    #scale_fill_viridis() + 
+    scale_fill_distiller(palette=palette, direction = 1, na.value="white") + # PuBuGn , limits = limit_val
+    xlab(attr) + ylab('borough') + 
+    ggtitle(paste0(tit,': ',attr))
+  fn = paste0(fout,"borough_vs_",attr,'-tiles.pdf')
+  print(fn)
+  ggsave(fn, p, width=w, height=h)
+  
+  # -----------------------------------
+  # same plot with z scores
+  # -----------------------------------
+  pz = ggplot(df, aes(x=var2, y=reorder(var1, desc(var1)), fill=zscore, label=label)) + 
+    geom_tile(color = "white", lwd = 1, linetype = 1) +
+    geom_text(size = 2, color="grey50") +   
+    theme_light() +
+    theme(panel.background=element_rect(fill="white")) +  
+    theme(axis.text.x = element_text(angle = 50, hjust = 1)) +
+    scale_fill_distiller(palette = "Spectral", direction=1, limit=zlimit, na.value="white") + 
+    xlab(attr) + ylab('borough') + 
+    #geom_vline(aes(xintercept=seq(1,nrow(ddf))+.5),colour="grey50",size=.4) + # vertical lines
+    ggtitle(paste0(tit,"(z scores): ",attr))
+  fn = paste0(fout,"borough_vs_",attr,'-tiles_z.pdf')
+  print(fn)
+  ggsave(fn, pz, width=w, height=h)
+}
+
+# "geoscale"       "group_type"     "size"           "activity_level"
+
+bScaledPop = F
+if (bScaledPop){
+  fn = '../tmp/fb_groups_pop_'
+  df = boro_pop_df
+  df$weight_sum = round(df$weight_sum_pop, 1)
+  # remove City of London as it's an outlier
+  df[df$var1 == 'City of London', 'weight_sum'] = NA
+} else {
+  fn = '../tmp/fb_groups_cnt_'
+  df = boro_df
+}
+plot_tiles_boro_vs_attr(df %>% filter(!(var2 %in% c("0_london",'1_subregion'))), "geoscale", fn, 5, 7.5, bScaledPop=bScaledPop)
+plot_tiles_boro_vs_attr(df, "size", fn, 4, 7.5, c('small','medium','large','huge'), bScaledPop=bScaledPop)
+plot_tiles_boro_vs_attr(df, "group_type", fn, 9, 7.5, bScaledPop=bScaledPop)
+plot_tiles_boro_vs_attr(df, "activity_level", fn, 4, 7.5, c('inactive','low','medium','high','very high'), bScaledPop=bScaledPop)
+
+rm(df)
+
+```
+
+### Viz borough stats maps
+
+Prep data
+
+```{r}
+boro_df = readRDS('../tmp/fb_groups_borough_stats.rds')
+names(boro_df) = paste0('fb_',names(boro_df))
+names(boro_df)
+stopifnot(nrow(boros_gdf) > 0)
+
+to_exclude = c('geometry')
+boros_gdf1 = boros_gdf %>% rename_at(vars(-one_of(to_exclude)), ~ paste0('lpop_',.)) %>%
+  rename(borough_name=lpop_name)
+
+boros_gdf1 = boros_gdf1 %>% st_transform(27700) %>% 
+  left_join(boro_df %>% rename(borough_name=fb_borough_name), by='borough_name')
+# write data
+write_xlsx(boros_gdf1 %>% st_drop_geometry(), '../tmp/fb_groups_borough_stats_wpop.xlsx')
+st_write(boros_gdf1, '../tmp/fb_groups_borough_stats_wpop_geo.geojson', overwrite=T, delete_layer=T)
+saveRDS(boros_gdf1, '../tmp/fb_groups_borough_stats_wpop_geo.rds')
+rm(boros_gdf1)
+```
+
+Visualise with choropleths
+
+```{r}
+gdf = readRDS('../tmp/fb_groups_borough_stats_wpop_geo.rds')
+gdf = st_simplify(gdf, dTolerance = .001)
+gdf$borough_name_short = abbreviate(gdf$borough_name, 12, dot = T)
+#gdf$borough_name_short = abbreviate(gdf$borough_name, 12, dot = T)
+gdf$borough_name_short = strtrim(gdf$borough_name, 12)
+
+names(gdf)
+
+plot_choro = function(geodf, attr, tit, fout, n=5, binning="jenks", palette="YlGnBu"){
+  tmap_mode("plot")
+  dd = geodf %>% st_drop_geometry()
+  n_values = sum(!is.na(dd[,attr]))
+  #n_values
+  if (n_values < 10 || sd(dd[,attr], na.rm = T) == 0){
+    print(paste0('too few or all zero values for ',attr,' skipping.'))
+    return(NA)
+  }
+  rm(dd)
+  
+  p = tm_shape(geodf) +
+      tm_fill(attr, palette=palette, n=n, style=binning, legend.hist=T) + 
+      tm_borders("white", lwd = .6) +
+      tm_legend(show = T, legend.outside=T, legend.outside.position="right") + 
+      tm_layout(title=paste0(tit," bins=",binning), frame = F)
+  
+  fn1 = paste0(fout, '-', attr, '-', palette, '.pdf')
+  print(fn1)
+  tmap_save(p, fn1)
+  return(p)
+}
+
+# loop through all numeric variables
+fn = '../tmp/fb_groups_boro_choro_map'
+cols_to_viz = gdf %>% select_if(is.numeric) %>% st_drop_geometry() %>% names()
+
+for (col in cols_to_viz){
+  plot_choro(gdf, col, paste0('FB groups in boroughs: ',col), fn, 7)
+  plot_choro(gdf, col, paste0('FB groups in boroughs: ',col), fn, 7, palette="YlOrBr")
+}
+
+if (F){
+  simple_scatter = function(df, vara, varb, title){
+    # plot histogram of var A
+    p <- ggplot(df, aes_string(x=vara)) + #scale_y_log10() +
+      geom_histogram(color="white", fill="lightblue") + #scale_y_log10() +
+      theme_light() +
+      ggtitle(paste0(vara," (N=", nrow(df),")")) + 
+      xlab(vara)
+    print(p)
+    
+    # plot histogram of var B
+    p <- ggplot(df, aes_string(x=varb)) + #scale_y_log10() +
+      geom_histogram(color="white", fill="lightblue") + #scale_y_log10() +
+      theme_light() +
+      ggtitle(paste0(varb," (N=", nrow(df),")")) + 
+      xlab(varb) 
+    print(p)
+    
+    # scatter plot between pop and fb groups
+    p <- ggplot(gdf, aes_string(x=vara, y=varb)) + # , 
+      geom_point(color="lightblue") + 
+      geom_smooth(method=lm, se=T, fullrange=T, alpha=.3, size = .2)+
+      geom_text(label=gdf$name, size=1.2, position = position_nudge(y = -1.5), alpha=.8) +
+      theme_light() +
+      ggtitle(title)
+    
+    return(p)
+  }
+  
+  simple_scatter(gdf, "gla_population_estimate_2017", "fb_groups_pop", 
+                 "Boroughs: Resident pop vs N Facebook groups")
+  
+  simple_scatter(gdf, "average_age_2017", "fb_groups_pop", 
+                 "Boroughs: Resident avg age vs N Facebook groups per pop")
+  
+  simple_scatter(gdf, "fb_members_pop_prop", "fb_groups_pop", 
+                 "Boroughs: FB members vs FB groups")
+}
+
+
+```
+
+### Correlations and var selection
+
+Based on <https://cran.r-project.org/web/packages/corrplot/vignettes/corrplot-intro.html>
+
+```{r}
+# http://www.sthda.com/english/wiki/visualize-correlation-matrix-using-correlogram
+  # https://cran.r-project.org/web/packages/corrplot/vignettes/corrplot-intro.html
+
+plot_correlations = function(df, cols, title, sz, col_stats_df){
+  print(paste('plot_correlations:',title))
+  cor_method = 'spearman'
+  if (T){
+    corr_df = correl_table(df[,cols], method = cor_method, includeGroups = T)
+    corr_df = corr_df %>% arrange(desc(cor))
+    
+    # join by row/column
+    col_stats_df1 = col_stats_df
+    names(col_stats_df1) = paste0('row_',names(col_stats_df1))
+    col_stats_df2 = col_stats_df
+    names(col_stats_df2) = paste0('col_',names(col_stats_df2))
+    
+    corr_df = corr_df %>% left_join(col_stats_df1 %>% rename(row=row_col_name), by = 'row') %>% 
+      left_join(col_stats_df2 %>% rename(column=col_col_name), by = 'column')
+    corr_df = corr_df %>% mutate( #same_group = (col_lpop & row_lpop) | (col_fb & row_fb),
+                    tot_ties = col_ties_n + row_ties_n,
+                    tot_zero_na = col_zero_n + row_zero_n + col_na_n + row_na_n)
+    
+    fn = paste0('../tmp/correl_matrix_table_',title,'.xlsx')
+    write.xlsx(corr_df, fn)
+    print(fn)
+  }
+  if (T){
+    # plot correlation
+    # corr
+    mat = cor(df[,cols], method = cor_method)
+    # p values
+    res1 <- cor.mtest(df[,cols], method = cor_method, conf.level = .95, exact=F)
+    p_mat = res1$p
+    p_mat[lower.tri(p_mat, diag = T)] <- 1 # to draw matrix correctly
+    sig_level = .05
+    # output file
+    fn = paste0('../tmp/correl_matrix_',title,'.pdf')
+    print(fn)
+    pdf(fn, height=sz, width=sz)
+    # plot correlation matrix
+    stopifnot(dim(mat)==dim(res1$p))
+    p = corrplot(mat, method = 'color', tl.col = "gray30", addCoef.col="gray80", 
+                 tl.cex = .8, number.cex = .5, title=paste(title, cor_method),
+                 mar = c(0,0,1.5,0), p.mat = p_mat, sig.level = sig_level)
+    print(p)
+    
+    p2 = corrplot.mixed(mat, # p.mat = res1$p, insig = "label_sig", 
+                  tl.pos = 'lt', diag = 'l',
+                  # insig = "p-value",
+                  sig.level = c(.001, .01, .05), pch.cex = .7, pch.col = "white",
+                  #sig.level = -1, 
+                  tl.cex = .8, number.cex = .7, tl.col = "gray30",
+                  title=paste0(title,' plot 2'), mar=c(0,0,1.5,0))
+    print(p2)
+    
+    p2a = corrplot.mixed(mat, insig = "label_sig", p.mat = p_mat,
+                  tl.pos = 'lt', diag = 'l',
+                  sig.level = c(.001, .01, .05), pch.cex = .7, pch.col = "white",
+                  #sig.level = -1, 
+                  tl.cex = .8, number.cex = .5, tl.col = "gray30",
+                  title=paste0(title,' plot 2a'), mar=c(0,0,1.5,0))
+    print(p2a)
+    
+    p3 = corrplot.mixed(mat, order = 'AOE', p.mat = p_mat, insig = "label_sig",
+                  tl.pos = 'lt', upper = "number", lower = "circle",
+                  diag = 'l',
+                  # insig = "p-value", 
+                  sig.level = c(.001, .01, .05), pch.cex = .7, pch.col = "white",
+                  #sig.level = -1, 
+                  tl.cex = .8, number.cex = .7, tl.col = "gray30",
+                  title=paste0(title,' plot 3'), mar=c(0,0,1.5,0))
+    print(p3)
+    
+    p4 = corrplot.mixed(mat, order = 'AOE', p.mat = p_mat,
+                  tl.pos = 'lt', upper = "number", lower = "circle",
+                  diag = 'l',
+                  # plotCI = 'rect',
+                  # insig = "p-value", 
+                  sig.level = c(.001, .01, .05), pch.cex = .7, pch.col = "white",
+                  #sig.level = -1, 
+                  tl.cex = .8, number.cex = .7, tl.col = "gray30",
+                  title=paste0(title,' plot 4'), mar=c(0,0,1.5,0))
+    print(p4)
+    
+    dev.off()
+  }
+  print('ok')
+}
+
+# load data and remove City
+df = readRDS('../tmp/fb_groups_borough_stats_wpop_geo.rds') %>% st_drop_geometry() %>%
+  filter(borough_name != 'City of London')  %>% 
+  mutate(lpop_proportion_of_seats_won_by_labour_in_2014_election = 
+           ifelse(borough_name == 'Barnet', 49.4159,
+                  lpop_proportion_of_seats_won_by_labour_in_2014_election))
+dim(df)
+
+# rename columns to make them readable
+df = df %>% rename(
+  # fb
+  n_groups = fb_total_all_p100k, 
+  n_members = fb_total_likes_p100k,
+  n_posts = fb_total_lastm_posts_p100k, 
+  scale_boro = fb_geoscale_2_borough_p100k,   
+  scale_suburb = fb_geoscale_3_suburb_p100k,   
+  scale_neigh = fb_geoscale_4_neighbourhood_p100k, 
+  scale_poi = fb_geoscale_6_poi_p100k,
+  buy_sell = fb_group_type_buy_sell_groups_p100k,
+  local_news = fb_group_type_local_group_page_news_notice_boards_p100k,
+  local_history = fb_group_type_local_history_memories_p100k,
+  immigrant = fb_group_type_immigrant_groups_p100k,
+  parents = fb_group_type_parent_support_groups_p100k,
+  hobby_arts = fb_group_type_social_local_hobby_arts_or_entertainment_group_p100k,
+  letting = fb_group_type_letting_and_property_group_p100k,
+  volunteer = fb_group_type_support_volunteer_conservation_p100k,
+  school_memory = fb_group_type_school_memories_history_p100k,
+  business = fb_group_type_business_groups_p100k,
+  university = fb_group_type_university_groups_p100k,
+  animals = fb_group_type_animal_focused_inc_lost_found_dog_walking_groups_p100k,
+  # pop 
+  pop_density_17 = lpop_population_density_per_hectare_2017,
+  pop65_15 = lpop_proportion_of_population_aged_65_and_over_2015,
+  bame_16 = lpop_pc_of_population_from_bame_groups_2016,
+  uk_migr_15 = lpop_net_internal_migration_2015,
+  int_migr_15 = lpop_net_international_migration_2015,
+  fem_empl_15 = lpop_female_employment_rate_2015,
+  hh_income_13 = lpop_modelled_household_median_income_estimates_2012_13,
+  house_price_15 = lpop_median_house_price_2015,
+  labour_14  = lpop_proportion_of_seats_won_by_labour_in_2014_election,
+  depriv_19 = lpop_imd_average_score
+)
+
+# calc column stats
+col_df = tibble(col_name = df %>% select_if(is.numeric) %>% names(),
+    na_n = colSums(is.na(df %>% select_if(is.numeric)), na.rm = T),
+    zero_n = colSums(df %>% select_if(is.numeric) == 0, na.rm = T),
+    ties_n = df %>% select_if(is.numeric) %>% 
+        mutate(across(everything(), ~ sum(duplicated(rank(.))))) %>%
+        unique() %>% unlist()
+  )
+
+dim(col_df)
+# 178 variables, 84 lpop, 94 for fb
+# let's filter out variables with too many missing values:
+threshold = 8 # max missing values
+col_df = col_df %>% mutate(valid = na_n <= threshold & zero_n <= threshold & ties_n <= threshold)
+col_df[col_df$col_name=='lpop_gross_annual_pay_female_2016','valid']=F
+col_df[col_df$col_name=='lpop_gross_annual_pay_2016','valid']=F
+valid_vars = col_df %>% filter(valid) %>% dplyr::select(col_name)
+# 121 valid variables: 77 lpop, 44 for fb
+
+# ------------------------------------------------------
+# Correl: FB groups vs London pop
+# ------------------------------------------------------
+useful_lpop_vars = c("pop_density_17","pop65_15","bame_16","uk_migr_15","int_migr_15",
+  "fem_empl_15","hh_income_13","house_price_15","labour_14","depriv_19")
+
+fb_vars_tot_scale = c("n_groups","n_members","n_posts",
+  "scale_boro","scale_suburb","scale_neigh","scale_poi")
+
+fb_vars_types = c("buy_sell","local_news","local_history","immigrant","parents","hobby_arts",
+  "letting","volunteer","school_memory","business","university","animals")
+
+# select valid columns for analysis
+sel_df = df[,c("borough_name", fb_vars_tot_scale, fb_vars_types, useful_lpop_vars)] %>% 
+  filter(borough_name != 'City of London')
+saveRDS(sel_df, '../tmp/selected_vars_regr_df.rds')
+
+colSums(is.na(sel_df))
+stopifnot(sum(is.na(sel_df))==0)
+
+# generate all plots
+plot_correlations(df, c(fb_vars_tot_scale, fb_vars_types, useful_lpop_vars), "fb_all_vs_lpop", 10, col_df)
+plot_correlations(df, c(fb_vars_tot_scale, useful_lpop_vars), "fb_vs_lpop", 6, col_df)
+plot_correlations(df, c(fb_vars_tot_scale, fb_vars_types), "fb_all", 7, col_df)
+```
+
+### PCA on variables
+
+```{r}
+# ---------------------------------------------
+# PCA for feature importance lpop
+# ---------------------------------------------
+df1 = df[,c("borough_name", valid_lpop_vars)] %>% 
+  filter(borough_name != 'City of London') %>%
+  mutate(lpop_proportion_of_seats_won_by_labour_in_2014_election = 
+           ifelse(borough_name == 'Barnet', 49.4159,
+                  lpop_proportion_of_seats_won_by_labour_in_2014_election))
+summary(df1)
+# calculate PCA
+lpop_pca <- prcomp(df1 %>% select(where(is.numeric)), center = TRUE, scale. = TRUE)
+summary(lpop_pca)
+attributes(lpop_pca)
+# viz
+fviz_eig(lpop_pca)
+
+p = fviz_pca_var(lpop_pca, labelsize = 2,
+       col.ind = "cos2", # Color by the quality of representation
+       gradient.cols = c("#00AFBB", "#E7B800", "#FC4E07"),
+       repel = TRUE # Avoid text overlapping
+       )
+ggsave('../tmp/pca_variables_lpop_plot.pdf', p)
+
+fviz_pca_biplot(lpop_pca, repel = TRUE, labelsize = 1,
+                col.var = "#2E9FDF", # Variables color
+                col.ind = "#696969"  # Individuals color
+                )
+
+# ---------------------------------------------
+# PCA for feature importance: Facebook
+# ---------------------------------------------
+df1 = df %>% filter(borough_name != 'City of London') %>% select(all_of(fb_vars)) %>%
+  select(-fb_geoscale_0_london_cnt, -fb_geoscale_1_subregion_cnt, 
+         -fb_geoscale_0_london_p100k, -fb_geoscale_1_subregion_p100k)
+summary(df1) 
+
+fb_pca <- prcomp(df1 %>% select(where(is.numeric) & matches('_cnt')), center = TRUE, scale. = TRUE)
+summary(fb_pca)
+attributes(fb_pca)
+# viz
+fviz_eig(fb_pca)
+
+p = fviz_pca_var(fb_pca, labelsize = 2,
+       col.ind = "cos2", # Color by the quality of representation
+       gradient.cols = c("#00AFBB", "#E7B800", "#FC4E07"),
+       repel = TRUE # Avoid text overlapping
+       )
+ggsave('../tmp/pca_variables_fb_plot.pdf', p)
+
+fviz_pca_biplot(lpop_pca, repel = TRUE, labelsize = 1,
+                col.var = "#2E9FDF", # Variables color
+                col.ind = "#696969"  # Individuals color
+                )
+# Joliffe selection method: not applicable.
+# Canonical correlation analysis (CCA) not recommended for small samples.
+```
+
+```{r}
+
+df = readRDS('../tmp/fb_groups_borough_stats_wpop_geo.rds') %>% st_drop_geometry()
+sel_vars = read_excel("../analysis/borough_stats/boro_correlations/correl_matrix_table_all_variables_boroughs-v1.xlsx")
+sel_vars = sel_vars %>% filter(selected=='T') %>% select(row, column)
+sel_vars = unique(c(sel_vars$row, sel_vars$column))
+df = df %>% select(all_of(sel_vars))
+
+plot_correlations(df, df %>% select_if(is.numeric) %>% select(matches('lpop_')) %>% names(), "select_variables_boroughs_lpop", 17, col_df)
+plot_correlations(df, df %>% select_if(is.numeric) %>% select(matches('fb_')) %>% names(), "select_variables_boroughs_fb", 12, col_df)
+```
+
+### Regressions
+
+1)  Explanation of FB variability through indep variables
+
+2)  Further research: qual: finding social issues and trends quant: what
+    can FB predict/explain?
+    
+    
+Why step wise regression is poor: <https://journalofbigdata.springeropen.com/articles/10.1186/s40537-018-0143-6>
+
+<https://stats.stackexchange.com/questions/13686/what-are-modern-easily-used-alternatives-to-stepwise-regression>
+
+<https://sdesabbata.github.io/r-for-geographic-data-science/regression-analysis.html#multiple-regression>
+
+<https://www.rdocumentation.org/packages/psych/versions/2.2.9/topics/pairs.panels>
+
+<https://ggobi.github.io/ggally/reference/ggpairs.html>
+
+<https://ashutoshtr.medium.com/what-is-stepaic-in-r-a65b71c9eeba>
+
+<http://www.sthda.com/english/articles/37-model-selection-essentials-in-r/154-stepwise-regression-essentials-in-r/>
+
+#### Var normalisation
+
+```{r}
+sel_df = readRDS('../tmp/selected_vars_regr_df.rds')
+dim(sel_df) # 32 30
+
+# summary stats
+desc_stats_df = round(describe(sel_df[,c("n_groups","n_posts",useful_lpop_vars)]),3)
+View(desc_stats_df)
+View(desc_stats_df %>% filter(abs(skew) > .5))
+
+# norm vars
+norm_df = sel_df
+vars_to_norm = c("int_migr_15","hh_income_13","house_price_15",'pop_density_17','hh_income_13')
+for (col in vars_to_norm){
+  pos_vars = abs(min(norm_df[,col])) + norm_df[,col] + 1
+  print(pos_vars)
+  log_var = log2(pos_vars)
+  #norm_df = subset(norm_df, select=-col)
+  #norm_df[,paste0(col,'_log')] = log_var
+  norm_df[,col] = log_var
+}
+#norm_df = norm_df[!names(norm_df) %in% vars_to_norm] 
+
+norm_desc_stats_df = round(describe(norm_df),3)
+#View(norm_desc_stats_df)
+
+# var pairs
+pdf("../tmp/correlation_pairs_viz.pdf", width = 12, height = 12)
+pairs.panels(norm_df[,c("n_groups","n_posts",useful_lpop_vars)], 
+     method = "spearman", # correlation method
+     hist.col = "#00AFBB",
+     density = T,  # show density plots
+     ellipses = T # show correlation ellipses
+)
+dev.off()
+```
+
+#### Linear models
+
+Negative binomial: <https://stats.oarc.ucla.edu/r/dae/negative-binomial-regression>
+
+```{r}
+# meaningful variables
+# fb_vars_tot_scale, fb_vars_types, useful_lpop_vars
+dim(norm_df)
+
+model_fld = '../tmp/models'
+dir.create(model_fld, showWarnings = FALSE)
+
+length(fb_vars_tot_scale) # 7
+length(fb_vars_types) # 12
+length(useful_lpop_vars) # 10
+```
+
+TODO: Leave one out cross-validation on linear reg
+https://www.statology.org/leave-one-out-cross-validation-in-r/
+
+```{r}
+# using caret
+
+#specify the cross-validation method
+ctrl <- trainControl(method = "LOOCV")
+
+useful_lpop_vars
+
+# fit a regression model and use LOOCV to evaluate performance
+indep_vars = c("pop_density_17", "pop65_15", "bame_16", "uk_migr_15")
+indep_vars = useful_lpop_vars
+indep_vars = c("pop65_15")
+target_var = "n_groups"
+reg_form = as.formula(paste(target_var, "~",  paste0(indep_vars, collapse = '+')))
+
+# train model
+model <- caret::train(reg_form, 
+      data = sel_df[, c("n_groups", indep_vars)], 
+      method = "lm", trControl = ctrl)
+print(model)
+
+# normal regression
+model2 = lm(reg_form, sel_df[, c("n_groups", indep_vars)])
+summary(model2)
+#view summary of LOOCV               
+
+# RMSE      Rsquared    MAE     
+# 1.687795  0.00258182  1.331303
+```
+
+
+```{r}
+length(fb_vars_tot_scale) # 7
+length(fb_vars_types) # 12
+length(useful_lpop_vars) # 10
+names(norm_df)
+
+# scale data
+scaled_df = norm_df %>% mutate_if(is.numeric, scale)
+
+var_groups = list(
+  c("pop65_15"),
+  c("pop_density_17"),
+  c("house_price_15"),
+  c("depriv_19"),
+  c("hh_income_13"),
+  c("int_migr_15"),
+  c("uk_migr_15"),
+  c("bame_16"),
+  c("pop_density_17", "pop65_15"),
+  c("pop_density_17", "pop65_15", 'int_migr_15'),
+  c("pop_density_17", 'int_migr_15', 'uk_migr_15', 'bame_16'), # migration
+  c("fem_empl_15", 'house_price_15', 'hh_income_13', "depriv_19"), # economics
+  useful_lpop_vars
+)
+target_vars = c("n_groups", "n_posts", "scale_poi", "scale_suburb", "scale_boro",
+                "buy_sell", 'local_news', 'local_history', 'immigrant', 'parents', 
+                'volunteer', 'hobby_arts', 
+                'school_memory','business','university','animals')
+
+regr_results = tibble()
+model_id = 0
+#data_df = norm_df
+data_df = scaled_df
+
+for (target_var in target_vars)
+for (indep_vars in var_groups){
+  print("==============================")
+  print("==============================")
+  model_id = model_id + 1
+  print(paste('model_id', model_id))
+  print(target_var)
+  print(" < ")
+  print(indep_vars)
+  print(length(indep_vars))
+  print("==============================")
+  reg_form = as.formula(paste(target_var, "~",  paste0(indep_vars, collapse = '+')))
+  # simple lm
+  print("SIMPLE LM")
+  
+  model1 = lm(reg_form, data_df) # scaled_df
+  print(summary(model1))
+  vif_vals1 = ifelse(model1$rank > 2, vif(model1), NA)
+  pval = anova(model1)$'Pr(>F)'[1]
+  print(round(model1$coefficients,3))
+  print('>> linear betas')
+  beta1 = lm.beta(model1)
+  print(beta1)
+  beta_str = paste(names(beta1$coefficients), round(beta1$coefficients,2), sep = " (", collapse = "), ")
+  beta_str = paste0(beta_str,')')
+  print(beta_str)
+  coeff_str = paste(names(model1$coefficients), round(model1$coefficients,3), collapse='); ', sep = ' (')
+  
+  # save model
+  mfn = paste0(model_fld,'/model_',model_id,'a.rds')
+  print(mfn)
+  saveRDS(model1, mfn)
+  
+  row = tibble(as.data.frame(t(round(model1$coefficients,2))))
+  names(row) = paste0('var_',names(row))
+  
+  moran = calc_morans_i(model1, )
+  
+  # save results
+  regr_results = bind_rows(regr_results, bind_cols(row, tibble(
+    id = paste0(model_id,'a'),
+    type = 'simple_LM',
+    target_var = paste0(target_var,collapse = '+'),
+    indep_vars_n = length(indep_vars),
+    indep_vars = paste0(indep_vars,collapse = '+'),
+    r.squared = round(summary(model1)$r.squared,2),
+    adj.r.squared = round(summary(model1)$adj.r.squared,2),
+    betas = beta_str,
+    coeff = coeff_str,
+    f_val = round(summary(model1)$fstatistic['value'],2),
+    f_num = round(summary(model1)$fstatistic['numdf'],2),
+    vif = round(vif_vals1,2),
+    pval = round(pval,5))))
+  print("==============================")
+  
+  if (length(indep_vars)==1) next()
+  
+  # stepwise
+  print("STEPWISE")
+  stepw_model1 <- stepAIC(model1, direction = "both", trace = F)
+  print(summary(stepw_model1))
+  sum_stepmodel = summary(stepw_model1)
+  # save model to binary file
+  mfn = paste0(model_fld,'/model_',model_id,'b.rds')
+  print(mfn)
+  saveRDS(stepw_model1, mfn)
+  
+  vif_vals2 = ifelse(stepw_model1$rank > 2, vif(stepw_model1), NA)
+  print("vif_vals")
+  print(vif_vals2)
+  model_pval = anova(stepw_model1)$'Pr(>F)'[1] 
+  print('>> stepwise betas')
+  beta2 = lm.beta(stepw_model1)
+  print(beta2)
+  beta_str2 = paste(names(beta2$coefficients), round(beta2$coefficients,2), sep = " (", collapse = "), ")
+  beta_str2 = paste0(beta_str,')')
+  print(beta_str2)
+  coeff_str2 = paste(names(stepw_model1$coefficients), round(stepw_model1$coefficients,3), collapse='); ', sep = ' (')
+  
+  f1 = sum_stepmodel$fstatistic['value']
+  f_num = sum_stepmodel$fstatistic['numdf']
+  if (is.null(f1)){
+    f1 = NA
+    f_num = NA
+  }
+  
+  row2 = tibble(as.data.frame(t(round(stepw_model1$coefficients,2))))
+  names(row2) = paste0('var_',names(row2))
+  
+  regr_results = bind_rows(regr_results, bind_cols(row2, tibble(
+    id = paste0(model_id,'b'),
+    type = 'stepwise_LM',
+    target_var = paste0(target_var, collapse = '+'),
+    indep_vars_n = length(indep_vars),
+    indep_vars = as.character(stepw_model1$call$formula)[[3]],
+    r.squared = round(sum_stepmodel$r.squared,2),
+    adj.r.squared = round(sum_stepmodel$adj.r.squared,2),
+    betas = beta_str2,
+    coeff = coeff_str2,
+    f_val = round(f1,2),
+    f_num = round(f_num,2),
+    vif = round(vif_vals2,2),
+    pval = round(model_pval,5)
+  )))
+}
+
+regr_results$pval_sig = regr_results$pval < .05
+
+write_xlsx(regr_results, '../tmp/fb_regression_results.xlsx')
+View(regr_results)
+
+# select good models
+
+good_regr_results = regr_results[regr_results$id %in% c("11b","4a","22b","26b","65b","52b","43a","39b","29a","74b","78b","67a","91b","90b","104b","129b","117b","156b","140b","143b","182b","169b","195b","208b"),]
+write_xlsx(good_regr_results, '../tmp/fb_regression_results_top.xlsx')
+```
+
+#### Residual maps
+
+```{r}
+plot_choro_resid = function(geodf, attr, tit, fout){
+  tmap_mode("plot")
+  breaks_ = c(-2.2, -1.2, -.6, -.3, .3, .6, 1.2, 2.2)
+  
+  p = tm_shape(geodf) +
+      tm_fill(attr, palette="RdYlBu", style = "fixed", breaks=breaks_, legend.hist=T) +
+      tm_borders("grey", lwd = 1.2) +
+      tm_legend(show = T, legend.outside=T, legend.outside.position="right") + 
+      tm_layout(title=paste0(tit), frame = F)
+  
+  fn1 = paste0(fout, '-', attr, '.pdf')
+  print(fn1)
+  tmap_save(p, fn1)
+  return(p)
+}
+
+models = c('26b','39b','11b','4a','15a','52b','29a','78b','91b','143b')
+stopifnot(nrow(boros_gdf)==33)
+dim(sel_df)
+
+for (m in models){
+  print('======')
+  fn = paste0(model_fld, '/model_',m,'.rds')
+  print(fn)
+  mm = readRDS(fn)
+  
+  tmpdf = sel_df %>% rename(name = borough_name)
+  tmpgdf = boros_gdf %>% left_join(tmpdf, by = 'name')
+  # boro neighbours
+  boro_nbw = nb2listw(poly2nb(tmpgdf %>% filter(name != 'City of London')))
+  
+  # Moran's I on residuals
+  moran = lm.morantest(mm, boro_nbw)
+  moran_i = round(moran$statistic[[1]],2)
+  moran_p = as.vector(round(moran['p.value'][[1]],4))
+  moran_i_est = as.vector(round(moran['estimate'][[1]],4))[1]
+  moran_i_exp = as.vector(round(moran['estimate'][[1]],4))[2]
+  
+  tmpdf$residual = mm$residuals
+  tit = paste0('Residuals for model ', m, ': ', paste0(mm$call, collapse = ' '))
+  print(tit)
+  print(paste0("Moran: i=",moran_i,' exp=',moran_i_exp,' p=',moran_p))
+  next() # DEBUG
+  print(summary(mm))
+  print(summary(tmpdf$residual))
+  plot_choro_resid(tmpgdf, attr = 'residual', tit, paste0('../tmp/lmodel_map_residuals-', m))
+}
+
+```
+
+End of notebook
